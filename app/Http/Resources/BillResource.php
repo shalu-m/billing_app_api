@@ -19,6 +19,7 @@ class BillResource extends JsonResource
             'total_sgst'      => $this->total_sgst,
             'total_cgst'      => $this->total_cgst,
             'grand_total'     => $this->grand_total,
+            'total_profit'    => $this->total_profit,
             'amount_received' => $this->amount_received,
             'change_returned' => $this->change_returned,
             'notes'           => $this->notes,

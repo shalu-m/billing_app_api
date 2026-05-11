@@ -52,15 +52,19 @@ class ProductController extends Controller
     public function store(StoreProductRequest $request): JsonResponse
     {
         $product = Product::create([
-            'name'          => $request->name,
-            'unit'          => $request->unit,
-            'cost_price'    => $request->cost_price,
-            'selling_price' => $request->selling_price,
-            'sgst'          => $request->sgst ?? 0,
-            'cgst'          => $request->cgst ?? 0,
-            'stock'         => $request->stock,
-            'barcode'       => $request->barcode,
-            'is_active'     => $request->is_active ?? true,
+            'name'            => $request->name,
+            'unit'            => $request->unit,
+            'cost_price'      => $request->cost_price,
+            'selling_price'   => $request->selling_price,
+            'wholesale_price' => $request->filled('purchase_unit') ? $request->wholesale_price : null,
+            'wholesale_cost'  => $request->filled('purchase_unit') ? $request->wholesale_cost : null,
+            'sgst'            => $request->sgst ?? 0,
+            'cgst'            => $request->cgst ?? 0,
+            'stock'           => $request->stock,
+            'purchase_unit'   => $request->purchase_unit,
+            'purchase_qty'    => $request->purchase_qty,
+            'barcode'         => $request->barcode,
+            'is_active'       => $request->is_active ?? true,
         ]);
 
         return response()->json([
@@ -112,11 +116,11 @@ class ProductController extends Controller
     public function adjustStock(Request $request, Product $product): JsonResponse
     {
         $request->validate([
-            'adjustment' => 'required|integer',
+            'adjustment' => 'required|numeric',
             'reason'     => 'nullable|string|max:200',
         ]);
 
-        $newStock = $product->stock + (int) $request->adjustment;
+        $newStock = $product->stock + (float) $request->adjustment;
 
         if ($newStock < 0) {
             return response()->json([

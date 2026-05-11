@@ -1,9 +1,11 @@
 <?php
 
 use App\Http\Controllers\Api\BillController;
+use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\DashboardController;
 use App\Http\Controllers\Api\EggEntryController;
 use App\Http\Controllers\Api\ProductController;
+use App\Http\Controllers\Api\PurchaseController;
 use Illuminate\Support\Facades\Route;
 
 /*
@@ -21,6 +23,16 @@ Route::prefix('products')->group(function () {
     Route::put('/{product}',   [ProductController::class, 'update']);
     Route::delete('/{product}',[ProductController::class, 'destroy']);
     Route::patch('/{product}/stock', [ProductController::class, 'adjustStock']);
+});
+
+// ── Purchases ──────────────────────────────────────────────────────────────
+Route::prefix('purchases')->group(function () {
+    Route::get('/',                          [PurchaseController::class, 'index']);
+    Route::post('/',                         [PurchaseController::class, 'store']);
+    Route::put('/{purchase}',                [PurchaseController::class, 'update']);
+    Route::get('/{purchase}',                [PurchaseController::class, 'show']);
+    Route::delete('/{purchase}',             [PurchaseController::class, 'destroy']);
+    Route::post('/product/{product_id}/preview', [PurchaseController::class, 'preview']);
 });
 
 // ── Bills ──────────────────────────────────────────────────────────────────
@@ -41,3 +53,9 @@ Route::prefix('egg-entries')->group(function () {
     Route::put('/{eggEntry}',    [EggEntryController::class, 'update']);
     Route::delete('/{eggEntry}', [EggEntryController::class, 'destroy']);
 });
+
+// --configurations --------------------------------
+
+Route::get("/config",    [ConfigController::class, 'getConfig']);
+
+

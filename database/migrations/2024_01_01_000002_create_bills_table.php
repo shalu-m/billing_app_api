@@ -19,6 +19,7 @@ return new class extends Migration
             $table->decimal('total_sgst', 10, 2)->default(0.00);
             $table->decimal('total_cgst', 10, 2)->default(0.00);
             $table->decimal('grand_total', 10, 2)->default(0.00);
+            $table->decimal('total_profit', 10, 2)->default(0.00);
             $table->decimal('amount_received', 10, 2)->default(0.00);
             $table->decimal('change_returned', 10, 2)->default(0.00);
             $table->text('notes')->nullable();
@@ -42,15 +43,18 @@ return new class extends Migration
                   ->onDelete('set null');
             $table->string('product_name', 200);
             $table->string('unit', 50)->default('piece');
+            $table->enum('sell_mode', ['loose', 'wholesale'])->default('loose');
             $table->decimal('unit_price', 10, 2);
             $table->decimal('cost_price', 10, 2)->nullable();
-            $table->unsignedInteger('quantity');
+            $table->decimal('quantity', 10, 3);
+            $table->decimal('stock_qty', 10, 3)->default(0);
             $table->decimal('discount', 10, 2)->default(0.00);
             $table->decimal('sgst_percent', 5, 2)->default(0.00);
             $table->decimal('cgst_percent', 5, 2)->default(0.00);
             $table->decimal('sgst_amount', 10, 2)->default(0.00);
             $table->decimal('cgst_amount', 10, 2)->default(0.00);
             $table->decimal('line_total', 10, 2);
+            $table->decimal('line_profit', 10, 2)->default(0.00);
             $table->timestamps();
 
             $table->index('bill_id');

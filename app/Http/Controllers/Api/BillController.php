@@ -12,6 +12,7 @@ use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Validation\ValidationException;
 
 class BillController extends Controller
 {
@@ -48,96 +49,176 @@ class BillController extends Controller
     /**
      * POST /api/bills
      * Create a new bill with items. Reduces product stock automatically.
+     * 
+     * Item format:
+     * {
+     *   "product_id": 1,
+     *   "product_name": "Rice",
+     *   "unit": "kg",
+     *   "sell_mode": "loose" or "wholesale",
+     *   "quantity": 2,
+     *   "unit_price": 48,
+     *   "discount": 0,
+     *   "sgst_percent": 5,
+     *   "cgst_percent": 5
+     * }
      */
     public function store(StoreBillRequest $request): JsonResponse
     {
         DB::beginTransaction();
 
         try {
-            $subtotal       = 0;
-            $totalDiscount  = 0;
-            $totalSgst      = 0;
-            $totalCgst      = 0;
+            $subtotal        = 0;
+            $totalDiscount   = 0;
+            $totalSgst       = 0;
+            $totalCgst       = 0;
+            $totalProfit     = 0;
             $calculatedItems = [];
+            $stockNeeds      = [];
 
-            // ── 1. Calculate item totals ──────────────────────────
-            foreach ($request->items as $item) {
-                $item['discount']     = $item['discount'] ?? 0;
-                $item['sgst_percent'] = $item['sgst_percent'] ?? 0;
-                $item['cgst_percent'] = $item['cgst_percent'] ?? 0;
-
-                $calculated = BillItem::calculateAmounts($item);
-
-                $lineBase = $item['unit_price'] * $item['quantity'];
-
-                $subtotal      += $lineBase;
-                $totalDiscount += $item['discount'];
-                $totalSgst     += $calculated['sgst_amount'];
-                $totalCgst     += $calculated['cgst_amount'];
-
-                $calculatedItems[] = $calculated;
-            }
-
-            $grandTotal     = round($subtotal - $totalDiscount + $totalSgst + $totalCgst, 2);
-            $amountReceived = $request->amount_received ?? 0;
-            $changeReturned = max(0, round($amountReceived - $grandTotal, 2));
-
-            // ── 2. Create bill ───────────────────────────────
-            $bill = Bill::create([
-                'bill_number'     => Bill::generateBillNumber(),
-                'customer_name'   => $request->customer_name,
-                'payment_method'  => $request->payment_method,
-                'subtotal'        => round($subtotal, 2),
-                'total_discount'  => round($totalDiscount, 2),
-                'total_sgst'      => round($totalSgst, 2),
-                'total_cgst'      => round($totalCgst, 2),
-                'grand_total'     => $grandTotal,
-                'amount_received' => $amountReceived,
-                'change_returned' => $changeReturned,
-                'notes'           => $request->notes,
-            ]);
-
-            // ── 3. Optimize: fetch all products in one query ───────
-            $productIds = collect($calculatedItems)
+            $productIds = collect($request->items)
                 ->pluck('product_id')
                 ->filter()
                 ->unique()
                 ->values();
 
             $products = Product::whereIn('id', $productIds)
+                ->where('is_active', true)
+                ->lockForUpdate()
                 ->get()
                 ->keyBy('id');
 
+            // ── 1. Calculate item totals and profit ──────────────
+            foreach ($request->items as $index => $item) {
+                $productId = $item['product_id'] ?? null;
+                $sellMode  = $item['sell_mode'] ?? 'loose';
+                $quantity  = (float) $item['quantity'];
+
+                $item = [
+                    'product_id'   => $productId,
+                    'product_name' => $item['product_name'],
+                    'unit'         => $item['unit'],
+                    'sell_mode'    => $sellMode,
+                    'unit_price'   => (float) $item['unit_price'],
+                    'cost_price'   => 0,
+                    'quantity'     => $quantity,
+                    'stock_qty'    => 0,
+                    'discount'     => (float) ($item['discount'] ?? 0),
+                    'sgst_percent' => (float) ($item['sgst_percent'] ?? 0),
+                    'cgst_percent' => (float) ($item['cgst_percent'] ?? 0),
+                ];
+
+                if ($productId) {
+                    if (!isset($products[$productId])) {
+                        throw ValidationException::withMessages([
+                            "items.{$index}.product_id" => 'Product is inactive or unavailable.',
+                        ]);
+                    }
+
+                    $product = $products[$productId];
+                    $item['product_name'] = $product->name;
+                    $item['sgst_percent'] = (float) $product->sgst;
+                    $item['cgst_percent'] = (float) $product->cgst;
+
+                    if ($item['sell_mode'] === 'wholesale') {
+                        if (!$product->isBulkProduct()) {
+                            throw ValidationException::withMessages([
+                                "items.{$index}.sell_mode" => "{$product->name} cannot be sold in wholesale mode.",
+                            ]);
+                        }
+
+                        $item['unit']       = $product->purchase_unit;
+                        $item['unit_price'] = $product->getEffectiveWholesalePrice();
+                        $item['cost_price'] = $product->getEffectiveWholesaleCost();
+                        $item['stock_qty']  = $quantity * $product->purchase_qty;
+                    } else {
+                        $item['unit']       = $product->unit;
+                        $item['unit_price'] = $product->selling_price;
+                        $item['cost_price'] = $product->cost_price;
+                        $item['stock_qty']  = $quantity;
+                    }
+
+                    $stockNeeds[$productId] = ($stockNeeds[$productId] ?? 0) + $item['stock_qty'];
+                }
+
+                $lineBase = round($item['unit_price'] * $item['quantity'], 2);
+                if ($item['discount'] > $lineBase) {
+                    throw ValidationException::withMessages([
+                        "items.{$index}.discount" => 'Discount cannot be greater than the item amount.',
+                    ]);
+                }
+
+                $calculated = BillItem::calculateAmounts($item);
+
+                $subtotal      += $lineBase;
+                $totalDiscount += $item['discount'];
+                $totalSgst     += $calculated['sgst_amount'];
+                $totalCgst     += $calculated['cgst_amount'];
+                $totalProfit    += $calculated['line_profit'];
+
+                $calculatedItems[] = $calculated;
+            }
+
+            foreach ($stockNeeds as $productId => $stockQty) {
+                $product = $products[$productId];
+
+                if (((float) $product->stock + 0.0005) < (float) $stockQty) {
+                    throw ValidationException::withMessages([
+                        'items' => "{$product->name} has only {$product->stock} {$product->unit} in stock.",
+                    ]);
+                }
+            }
+
+            $grandTotal     = round($subtotal - $totalDiscount + $totalSgst + $totalCgst, 2);
+            $totalProfit    = round($totalProfit, 2);
+            $amountReceived = (float) ($request->amount_received ?? 0);
+            $changeReturned = max(0, round($amountReceived - $grandTotal, 2));
+
+            // ── 2. Create bill ───────────────────────────────
+            $bill = Bill::create([
+                'bill_number'     => Bill::generateBillNumber(),
+                'customer_name'   => $request->customer_name ?: 'Walk-in Customer',
+                'payment_method'  => $request->payment_method,
+                'subtotal'        => round($subtotal, 2),
+                'total_discount'  => round($totalDiscount, 2),
+                'total_sgst'      => round($totalSgst, 2),
+                'total_cgst'      => round($totalCgst, 2),
+                'grand_total'     => $grandTotal,
+                'total_profit'    => $totalProfit,
+                'amount_received' => $amountReceived,
+                'change_returned' => $changeReturned,
+                'notes'           => $request->notes,
+            ]);
+
+            // ── 3. Optimize: fetch all products in one query ───────
             // ── 4. Create bill items + update stock ───────────────
             foreach ($calculatedItems as $itemData) {
 
                 $productId = $itemData['product_id'] ?? null;
-
-                $costPrice = null;
-                if ($productId && isset($products[$productId])) {
-                    $costPrice = $products[$productId]->cost_price;
-                }
+                $sellMode = $itemData['sell_mode'] ?? 'loose';
 
                 $bill->items()->create([
-                    'product_id'   => $productId,
-                    'product_name' => $itemData['product_name'],
-                    'unit'         => $itemData['unit'],
-                    'unit_price'   => $itemData['unit_price'],
-                    'cost_price'   => $costPrice,
-                    'quantity'     => $itemData['quantity'],
-                    'discount'     => $itemData['discount'],
-                    'sgst_percent' => $itemData['sgst_percent'],
-                    'cgst_percent' => $itemData['cgst_percent'],
-                    'sgst_amount'  => $itemData['sgst_amount'],
-                    'cgst_amount'  => $itemData['cgst_amount'],
-                    'line_total'   => $itemData['line_total'],
+                    'product_id'     => $productId,
+                    'product_name'   => $itemData['product_name'],
+                    'unit'           => $itemData['unit'],
+                    'sell_mode'      => $sellMode,
+                    'unit_price'     => $itemData['unit_price'],
+                    'cost_price'     => $itemData['cost_price'],
+                    'quantity'       => $itemData['quantity'],
+                    'stock_qty'      => $itemData['stock_qty'],
+                    'discount'       => $itemData['discount'],
+                    'sgst_percent'   => $itemData['sgst_percent'],
+                    'cgst_percent'   => $itemData['cgst_percent'],
+                    'sgst_amount'    => $itemData['sgst_amount'],
+                    'cgst_amount'    => $itemData['cgst_amount'],
+                    'line_total'     => $itemData['line_total'],
+                    'line_profit'    => $itemData['line_profit'],
                 ]);
+            }
 
-                // atomic stock update (still fine)
-                if ($productId) {
-                    Product::where('id', $productId)
-                        ->decrement('stock', $itemData['quantity']);
-                }
+            // Deduct stock once per product in base units.
+            foreach ($stockNeeds as $productId => $stockQty) {
+                Product::where('id', $productId)->decrement('stock', $stockQty);
             }
 
             DB::commit();
@@ -147,8 +228,12 @@ class BillController extends Controller
                 'data'    => new BillResource($bill->load('items')),
             ], 201);
 
+        } catch (ValidationException $e) {
+            DB::rollBack();
+            throw $e;
         } catch (\Throwable $e) {
             DB::rollBack();
+            \Log::error('Bill creation error: ' . $e->getMessage());
 
             return response()->json([
                 'message' => 'Failed to create bill.',
@@ -175,11 +260,23 @@ class BillController extends Controller
         DB::beginTransaction();
 
         try {
-            // Restore stock for each item
+            // Restore stock for each item (in base units)
             foreach ($bill->items as $item) {
                 if ($item->product_id) {
-                    Product::where('id', $item->product_id)
-                           ->increment('stock', $item->quantity);
+                    $saleQtyInBaseUnit = (float) ($item->stock_qty ?? 0);
+
+                    if ($saleQtyInBaseUnit <= 0) {
+                        $saleQtyInBaseUnit = (float) $item->quantity;
+                    }
+
+                    $product = Product::withTrashed()
+                        ->where('id', $item->product_id)
+                        ->lockForUpdate()
+                        ->first();
+
+                    if ($product) {
+                        $product->increment('stock', $saleQtyInBaseUnit);
+                    }
                 }
             }
 
@@ -190,6 +287,7 @@ class BillController extends Controller
 
         } catch (\Throwable $e) {
             DB::rollBack();
+            \Log::error('Bill deletion error: ' . $e->getMessage());
             return response()->json(['message' => 'Failed to delete bill.', 'error' => $e->getMessage()], 500);
         }
     }
@@ -198,33 +296,26 @@ class BillController extends Controller
      * GET /api/bills/summary
      * Aggregated report data: overall totals, day-of-week breakdown, and products sorted by margin.
      */
-  public function summary(Request $request): JsonResponse
+    public function summary(Request $request): JsonResponse
     {
         $from   = $request->get('from', now()->startOfMonth()->toDateString());
         $to     = $request->get('to',   now()->toDateString());
         $fromDt = $from . ' 00:00:00';
         $toDt   = $to   . ' 23:59:59';
  
-        // Shared profit expression — identical for both drivers
-        $profitExpr = "(bill_items.unit_price * bill_items.quantity - bill_items.discount)
-                       - (bill_items.cost_price * bill_items.quantity)";
- 
         // Detect driver once so we pick the right date function below
         $isSQLite = DB::getDriverName() === 'sqlite';
  
         // ── Query 1: totals + total profit ───────────────────────────────────
-        // LEFT JOIN keeps bills that have zero items in the bill count.
-        // SUM(DISTINCT bills.grand_total) avoids double-counting per-item fan-out.
         $row = DB::table('bills')
-            ->leftJoin('bill_items', 'bills.id', '=', 'bill_items.bill_id')
             ->whereBetween('bills.created_at', [$fromDt, $toDt])
             ->selectRaw("
-                COUNT(DISTINCT bills.id)                AS total_bills,
-                COALESCE(SUM(DISTINCT bills.grand_total),    0) AS total_sales,
-                COALESCE(SUM(DISTINCT bills.total_discount), 0) AS total_discount,
-                COALESCE(SUM(DISTINCT bills.total_sgst),     0) AS total_sgst,
-                COALESCE(SUM(DISTINCT bills.total_cgst),     0) AS total_cgst,
-                COALESCE(SUM({$profitExpr}), 0)         AS total_profit
+                COUNT(bills.id)                         AS total_bills,
+                COALESCE(SUM(bills.grand_total),    0)  AS total_sales,
+                COALESCE(SUM(bills.total_discount), 0)  AS total_discount,
+                COALESCE(SUM(bills.total_sgst),     0)  AS total_sgst,
+                COALESCE(SUM(bills.total_cgst),     0)  AS total_cgst,
+                COALESCE(SUM(bills.total_profit),   0)  AS total_profit
             ")
             ->first();
  
@@ -237,13 +328,12 @@ class BillController extends Controller
             : "(DAYOFWEEK(bills.created_at) - 1)";
  
         $dayRows = DB::table('bills')
-            ->leftJoin('bill_items', 'bills.id', '=', 'bill_items.bill_id')
             ->whereBetween('bills.created_at', [$fromDt, $toDt])
             ->selectRaw("
-                {$dowExpr}                                      AS dow,
-                COUNT(DISTINCT bills.id)                        AS txn_count,
-                COALESCE(SUM(DISTINCT bills.grand_total), 0)    AS total_sales,
-                COALESCE(SUM({$profitExpr}), 0)                 AS total_profit
+                {$dowExpr}                                  AS dow,
+                COUNT(bills.id)                             AS txn_count,
+                COALESCE(SUM(bills.grand_total), 0)         AS total_sales,
+                COALESCE(SUM(bills.total_profit), 0)        AS total_profit
             ")
             ->groupByRaw($dowExpr)
             ->orderByRaw($dowExpr)
@@ -267,9 +357,12 @@ class BillController extends Controller
             ->whereBetween('bills.created_at', [$fromDt, $toDt])
             ->selectRaw("
                 bill_items.product_name,
-                SUM(bill_items.quantity)        AS qty_sold,
-                SUM(bill_items.line_total)       AS total_revenue,
-                SUM({$profitExpr})               AS gross_profit
+                SUM(CASE WHEN bill_items.sell_mode = 'loose'     THEN bill_items.quantity ELSE 0 END) AS loose_qty,
+                SUM(CASE WHEN bill_items.sell_mode = 'wholesale' THEN bill_items.quantity ELSE 0 END) AS wholesale_qty,
+                SUM(bill_items.stock_qty)        AS base_qty_sold,
+                SUM(bill_items.line_total)       AS total_sales,
+                SUM(bill_items.line_total - bill_items.sgst_amount - bill_items.cgst_amount) AS total_revenue,
+                SUM(bill_items.line_profit)      AS gross_profit
             ")
             ->groupBy('bill_items.product_name')
             ->get()
@@ -278,8 +371,13 @@ class BillController extends Controller
                 $profit  = (float) $p->gross_profit;
                 return [
                     'product_name'   => $p->product_name,
-                    'qty_sold'       => (int) $p->qty_sold,
+                    'loose_qty'      => round((float) $p->loose_qty, 3),
+                    'wholesale_qty'  => round((float) $p->wholesale_qty, 3),
+                    'qty_sold'       => round((float) $p->base_qty_sold, 3),
+                    'base_qty_sold'  => round((float) $p->base_qty_sold, 3),
+                    'total_sales'    => round((float) $p->total_sales, 2),
                     'total_revenue'  => round($revenue, 2),
+                    'gross_profit'   => round($profit,  2),
                     'profit_revenue' => round($profit,  2),
                     'margin_percent' => $revenue > 0
                         ? round(($profit / $revenue) * 100, 2)
@@ -294,6 +392,9 @@ class BillController extends Controller
             'totals' => [
                 'total_bills'    => (int)   $row->total_bills,
                 'total_sales'    => round((float) $row->total_sales,    2),
+                'total_discount' => round((float) $row->total_discount, 2),
+                'total_sgst'     => round((float) $row->total_sgst,     2),
+                'total_cgst'     => round((float) $row->total_cgst,     2),
                 'total_profit'   => round((float) $row->total_profit,   2),
             ],
             'day_of_week_breakdown' => $dayRows,

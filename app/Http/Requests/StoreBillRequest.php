@@ -23,8 +23,10 @@ class StoreBillRequest extends FormRequest
             'items.*.product_id'       => 'nullable|exists:products,id',
             'items.*.product_name'     => 'required|string|max:200',
             'items.*.unit'             => 'required|string|max:50',
+            'items.*.sale_unit'        => 'nullable|string|max:50',
+            'items.*.sell_mode'        => 'required|in:loose,wholesale',
             'items.*.unit_price'       => 'required|numeric|min:0',
-            'items.*.quantity'         => 'required|integer|min:1',
+            'items.*.quantity'         => 'required|numeric|min:0.01',
             'items.*.discount'         => 'nullable|numeric|min:0',
             'items.*.sgst_percent'     => 'nullable|numeric|min:0|max:100',
             'items.*.cgst_percent'     => 'nullable|numeric|min:0|max:100',
@@ -36,7 +38,7 @@ class StoreBillRequest extends FormRequest
         return [
             'items.required'           => 'At least one item is required.',
             'items.*.product_name.required' => 'Each item must have a product name.',
-            'items.*.quantity.min'     => 'Quantity must be at least 1.',
+            'items.*.quantity.min'     => 'Quantity must be greater than 0.',
         ];
     }
 }

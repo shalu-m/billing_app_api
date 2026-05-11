@@ -123,4 +123,75 @@ return [
         'store' => env('APP_MAINTENANCE_STORE', 'database'),
     ],
 
+    'product_units' => [ 
+        "kg",
+        "g",
+        "mg",
+        
+        // Volume
+        "litre",
+        "ml",
+        
+        // Count
+        "piece",
+        "dozen",
+        "pair",
+        
+        // Packaged / measured
+        "packet",
+        "bottle",
+        "box",
+        "bundle",
+        "roll",
+        "can",
+        "tube",
+        "sachet",
+        "strip",
+        "sheet",
+        "metre",
+        "cm"
+    ],
+
+    'purchase_units' => [
+        "bag",
+        "sack",
+        "gunny bag",
+        
+        // Boxes / Cartons
+        "box",
+        "carton",
+        "crate",
+        "case",
+        "tray",
+        
+        // Tins / Containers
+        "tin",
+        "drum",
+        "barrel",
+        "canister",
+        "jar",
+        
+        // Bundles / Rolls
+        "bundle",
+        "bale",
+        "roll",
+        "reel",
+        
+        // Count based
+        "dozen",
+        "gross",
+        "pack"
+    ],
+
+    'payment_methods' => [
+        'Cash', 'UPI', 'Card'
+    ],
+
+    'shop_info' => [
+        'name' => "SUPERMARKET",
+        'address' => "Plot 42, Sector 12, Retail Hub, Chennai 600001",
+        'phone' => "+91 98787 78878",
+        'email' => "info@supermarket.com"    
+    ]
+
 ];
