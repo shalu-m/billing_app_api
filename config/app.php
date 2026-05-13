@@ -1,5 +1,10 @@
 <?php
 
+$enabledShops = array_values(array_filter(array_map(
+    fn ($shop) => strtolower(trim($shop)),
+    explode(',', (string) env('SHOP_ENABLED_SHOPS', 'supermarket'))
+)));
+
 return [
 
     /*
@@ -185,6 +190,85 @@ return [
 
     'payment_methods' => [
         'Cash', 'UPI', 'Card'
+    ],
+
+    'default_shop' => env('SHOP_DEFAULT', 'supermarket'),
+
+    'enabled_shops' => ['supermarket', 'egg'],
+
+    'shops' => [
+        'supermarket' => [
+            'label' => 'Supermarket',
+            'default_page' => 'billing',
+            'pages' => [
+                [
+                    'key' => 'billing',
+                    'label' => 'Billing',
+                    'permission' => 'supermarket.billing',
+                    'title' => 'Billing Terminal',
+                    'subtitle' => 'Create and manage customer bills',
+                ],
+                [
+                    'key' => 'products',
+                    'label' => 'Products',
+                    'permission' => 'supermarket.products',
+                    'title' => 'Product Inventory',
+                    'subtitle' => 'Manage, update and track products',
+                ],
+                [
+                    'key' => 'stock',
+                    'label' => 'Stock',
+                    'permission' => 'supermarket.stock',
+                    'title' => 'Stock Intake',
+                    'subtitle' => 'Track, add, edit and reverse supplier purchases',
+                ],
+                [
+                    'key' => 'billdetails',
+                    'label' => 'Bill Details',
+                    'permission' => 'supermarket.billdetails',
+                    'title' => 'Bill Details',
+                    'subtitle' => 'View and search past transactions',
+                ],
+                [
+                    'key' => 'reports',
+                    'label' => 'Reports',
+                    'permission' => 'supermarket.reports',
+                    'title' => 'Reports',
+                    'subtitle' => 'Sales, profit and product analytics',
+                ],
+            ],
+        ],
+        'egg' => [
+            'label' => 'Egg Tracking',
+            'default_page' => 'entry',
+            'pages' => [
+                [
+                    'key' => 'entry',
+                    'label' => 'Egg Entry',
+                    'permission' => 'egg.entry',
+                    'title' => 'Daily Egg Entry',
+                    'subtitle' => 'Record daily egg stock and sales',
+                ],
+                [
+                    'key' => 'egreports',
+                    'label' => 'Reports',
+                    'permission' => 'egg.reports',
+                    'title' => 'Egg Reports',
+                    'subtitle' => 'Egg tracking analytics and performance',
+                ],
+            ],
+        ],
+    ],
+
+    'role_permissions' => [
+        'admin' => ['*'],
+        'user' => [
+            'supermarket.billing',
+            'supermarket.products',
+            'supermarket.stock',
+            'supermarket.billdetails',
+            'egg.entry',
+        ],
     ],
 
     'shop_info' => [

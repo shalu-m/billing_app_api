@@ -38,11 +38,14 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Login successful',
             'token' => $plainToken,
-            'user' => [
-                'id' => $user->id,
-                'name' => $user->name,
-                'username' => $user->username,
-            ],
+            'user' => $this->userPayload($user),
+        ]);
+    }
+
+    public function me(Request $request)
+    {
+        return response()->json([
+            'user' => $this->userPayload($request->user()),
         ]);
     }
 
@@ -53,5 +56,16 @@ class AuthController extends Controller
         return response()->json([
             'message' => 'Logout successful',
         ]);
+    }
+
+    private function userPayload(User $user): array
+    {
+        return [
+            'id' => $user->id,
+            'name' => $user->name,
+            'username' => $user->username,
+            'role' => $user->role,
+            'navigation' => $user->navigation(),
+        ];
     }
 }

@@ -132,7 +132,7 @@ class EggEntryController extends Controller
             ],
             'best_day'   => $bestDay ? new EggEntryResource($bestDay) : null,
             'chart_data' => $chartData->values(),
-            'entries'    => EggEntryResource::collection($entries->sortByDesc('entry_date')->values()),
+            'entries'    => EggEntryResource::collection($entries->sortByDesc('entry_date')->values())->resolve($request),
         ]);
     }
 }
