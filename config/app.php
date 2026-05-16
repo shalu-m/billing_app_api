@@ -194,7 +194,7 @@ return [
 
     'default_shop' => env('SHOP_DEFAULT', 'supermarket'),
 
-    'enabled_shops' => ['supermarket', 'egg'],
+    'enabled_shops' => ['supermarket'], // add shops here ['egg', 'supermarket']
 
     'shops' => [
         'supermarket' => [
@@ -272,10 +272,10 @@ return [
     ],
 
     'shop_info' => [
-        'name' => "SUPERMARKET",
-        'address' => "Plot 42, Sector 12, Retail Hub, Chennai 600001",
-        'phone' => "+91 98787 78878",
-        'email' => "info@supermarket.com"    
+        'company_name' => 'KSR',
+        'name' => "NEAL DR MINI MART",
+        'address' => "Trivandram main Rd, Chunkankadai, 629003",
+        'phone' => "+91 93446 84637"
     ]
 
 ];
