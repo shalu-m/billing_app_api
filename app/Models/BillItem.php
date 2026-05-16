@@ -85,7 +85,7 @@ class BillItem extends Model
 
         // Calculate line profit: (unit_price - cost_price) * quantity - discount
         $costPrice = $item['cost_price'] ?? 0;
-        $lineProfit = round(($item['unit_price'] - $costPrice) * $item['quantity'] - $discount, 2);
+        $lineProfit = $costPrice ? round(($item['unit_price'] - $costPrice) * $item['quantity'] - $discount, 2) : 0;
 
         return array_merge($item, [
             'discount'     => $discount,
