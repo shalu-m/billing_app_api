@@ -2,7 +2,7 @@
 
 $enabledShops = array_values(array_filter(array_map(
     fn ($shop) => strtolower(trim($shop)),
-    explode(',', (string) env('SHOP_ENABLED_SHOPS', 'supermarket'))
+    explode(',', (string) env('SHOP_ENABLED_SHOPS', 'supermarket,egg'))
 )));
 
 return [
@@ -194,7 +194,7 @@ return [
 
     'default_shop' => env('SHOP_DEFAULT', 'supermarket'),
 
-    'enabled_shops' => ['supermarket'], // add shops here ['egg', 'supermarket']
+    'enabled_shops' => $enabledShops ?: ['supermarket', 'egg'],
 
     'shops' => [
         'supermarket' => [
@@ -243,6 +243,13 @@ return [
             'default_page' => 'entry',
             'pages' => [
                 [
+                    'key' => 'intakes',
+                    'label' => 'Stock Intake',
+                    'permission' => 'egg.intakes',
+                    'title' => 'Egg Stock Intake',
+                    'subtitle' => 'Record Monday and Thursday stock purchases',
+                ],
+                [
                     'key' => 'entry',
                     'label' => 'Egg Entry',
                     'permission' => 'egg.entry',
@@ -267,6 +274,7 @@ return [
             'supermarket.products',
             'supermarket.stock',
             'supermarket.billdetails',
+            'egg.intakes',
             'egg.entry',
         ],
     ],

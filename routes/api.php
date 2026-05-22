@@ -4,6 +4,7 @@ use App\Http\Controllers\Api\AuthController;
 use App\Http\Controllers\Api\BillController;
 use App\Http\Controllers\Api\ConfigController;
 use App\Http\Controllers\Api\EggEntryController;
+use App\Http\Controllers\Api\EggIntakeController;
 use App\Http\Controllers\Api\ProductController;
 use App\Http\Controllers\Api\PurchaseController;
 use App\Http\Middleware\EnsurePermissionAccess;
@@ -62,9 +63,20 @@ Route::middleware(SimpleTokenAuth::class)->group(function () {
             ->middleware(EnsurePermissionAccess::class.':supermarket.billdetails');
     });
 
+    Route::middleware(EnsureShopEnabled::class.':egg')->prefix('egg-intakes')->group(function () {
+        Route::get('/', [EggIntakeController::class, 'index'])
+            ->middleware(EnsurePermissionAccess::class.':egg.intakes,egg.entry,egg.reports');
+        Route::post('/', [EggIntakeController::class, 'store'])
+            ->middleware(EnsurePermissionAccess::class.':egg.intakes,egg.entry');
+        Route::delete('/{eggIntake}', [EggIntakeController::class, 'destroy'])
+            ->middleware(EnsurePermissionAccess::class.':egg.intakes,egg.entry');
+    });
+
     Route::middleware(EnsureShopEnabled::class.':egg')->prefix('egg-entries')->group(function () {
         Route::get('/summary', [EggEntryController::class, 'summary'])
             ->middleware(EnsurePermissionAccess::class.':egg.reports');
+        Route::get('/opening-stock', [EggEntryController::class, 'openingStock'])
+            ->middleware(EnsurePermissionAccess::class.':egg.entry,egg.intakes');
         Route::get('/', [EggEntryController::class, 'index'])
             ->middleware(EnsurePermissionAccess::class.':egg.entry');
         Route::post('/', [EggEntryController::class, 'store'])

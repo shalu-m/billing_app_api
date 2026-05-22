@@ -10,20 +10,28 @@ class EggEntryResource extends JsonResource
     public function toArray(Request $request): array
     {
         return [
-            'id'             => $this->id,
-            'entry_date'     => $this->entry_date->toDateString(),
-            'opening_stock'  => $this->opening_stock,
-            'fresh_arrivals' => $this->fresh_arrivals,
-            'eggs_sold'      => $this->eggs_sold,
-            'damaged_eggs'   => $this->damaged_eggs,
-            'closing_stock'  => $this->closing_stock,   // computed accessor
-            'total_stock'    => $this->total_stock,    // computed accessor
-            'cost_per_egg'   => $this->cost_per_egg,
-            'selling_price'  => $this->selling_price,
-            'revenue'        => $this->revenue,          // computed accessor
-            'profit'         => $this->profit,           // computed accessor
-            'notes'          => $this->notes,
-            'created_at'     => $this->created_at?->toDateTimeString(),
+            'id' => $this->id,
+            'entry_date' => $this->entry_date->toDateString(),
+            'opening_stock' => $this->opening_stock,
+            'new_stock_today' => $this->new_stock_today,
+            'total_eggs_sold' => $this->total_eggs_sold,
+            'damaged_eggs' => $this->damaged_eggs,
+            'closing_stock' => $this->closing_stock,
+            'avg_cost_per_egg' => $this->avg_cost_per_egg,
+            'total_cost' => $this->total_cost,
+            'total_revenue' => $this->total_revenue,
+            'gross_profit' => $this->gross_profit,
+            'notes' => $this->notes,
+            'sale_lines' => EggSaleLineResource::collection($this->whenLoaded('saleLines')),
+            'created_at' => $this->created_at?->toDateTimeString(),
+            'updated_at' => $this->updated_at?->toDateTimeString(),
+
+            'fresh_arrivals' => $this->new_stock_today,
+            'eggs_sold' => $this->total_eggs_sold,
+            'cost_per_egg' => $this->avg_cost_per_egg,
+            'revenue' => $this->total_revenue,
+            'profit' => $this->gross_profit,
+            'total_stock' => $this->opening_stock,
         ];
     }
 }
