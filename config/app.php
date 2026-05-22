@@ -282,7 +282,7 @@ return [
     'shop_info' => [
         'company_name' => 'KSR',
         'name' => "NEAL DR MINI MART",
-        'address' => "Trivandram main Rd, Chunkankadai, 629003",
+        'address' => "Trivandram Main Rd, Chunkankadai, 629003",
         'phone' => "+91 93446 84637"
     ]
 
