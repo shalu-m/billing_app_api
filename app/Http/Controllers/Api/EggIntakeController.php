@@ -31,14 +31,14 @@ class EggIntakeController extends Controller
         }
 
         $totalsQuery = clone $query;
-        $perPage = (int) $request->get('per_page', 20);
-        $intakes = $query->paginate($perPage);
+        $perPage     = (int) $request->get('per_page', 20);
+        $intakes     = $query->paginate($perPage);
 
         return EggStockIntakeResource::collection($intakes)->additional([
             'totals' => [
                 'total_trays_bought' => round((float) $totalsQuery->sum('trays_received'), 2),
-                'total_eggs_bought' => (int) (clone $totalsQuery)->sum('total_eggs'),
-                'total_investment' => round((float) (clone $totalsQuery)->sum('total_cost'), 2),
+                'total_eggs_bought'  => (int) (clone $totalsQuery)->sum('total_eggs'),
+                'total_investment'   => round((float) (clone $totalsQuery)->sum('total_cost'), 2),
             ],
         ]);
     }
@@ -46,37 +46,61 @@ class EggIntakeController extends Controller
     public function store(Request $request): JsonResponse
     {
         $validated = $request->validate([
-            'intake_date' => 'required|date',
-            'trays_received' => 'required|numeric|min:0',
-            'loose_eggs_received' => 'nullable|integer|min:0',
-            'eggs_per_tray' => 'required|integer|min:1',
-            'cost_per_tray' => 'required|numeric|gt:0',
-            'supplier_name' => 'nullable|string|max:150',
-            'notes' => 'nullable|string|max:1000',
+            'intake_date'           => 'required|date',
+            'trays_received'        => 'required|numeric|min:0',
+            'loose_eggs_received'   => 'nullable|integer|min:0',
+            'free_trays'            => 'nullable|numeric|min:0',
+            'free_loose_eggs'       => 'nullable|integer|min:0',
+            'eggs_per_tray'         => 'required|integer|min:1',
+            'total_purchase_amount' => 'required|numeric|min:0',
+            'supplier_name'         => 'nullable|string|max:150',
+            'notes'                 => 'nullable|string|max:1000',
         ]);
 
-        if ((float) $validated['trays_received'] <= 0 && (int) ($validated['loose_eggs_received'] ?? 0) <= 0) {
+        $traysReceived    = (float) $validated['trays_received'];
+        $looseEggs        = (int) ($validated['loose_eggs_received'] ?? 0);
+        $freeTrays        = (float) ($validated['free_trays'] ?? 0);
+        $freeLooseEggs    = (int) ($validated['free_loose_eggs'] ?? 0);
+        $eggsPerTray      = (int) $validated['eggs_per_tray'];
+        $totalAmount      = (float) $validated['total_purchase_amount'];
+
+        $purchasedEggs = (int) round(($traysReceived * $eggsPerTray) + $looseEggs);
+        $freeEggs      = (int) round(($freeTrays * $eggsPerTray) + $freeLooseEggs);
+        $totalEggs     = $purchasedEggs + $freeEggs;
+
+        if ($purchasedEggs <= 0 && $freeEggs <= 0) {
             return response()->json([
                 'message' => 'Enter trays received or loose eggs received.',
-                'errors' => [
-                    'trays_received' => ['Enter trays or loose eggs.'],
+                'errors'  => [
+                    'trays_received'      => ['Enter trays or loose eggs.'],
                     'loose_eggs_received' => ['Enter trays or loose eggs.'],
                 ],
             ], 422);
         }
 
-        $costPerEgg = (float) $validated['cost_per_tray'] / (int) $validated['eggs_per_tray'];
-        $looseEggs = (int) ($validated['loose_eggs_received'] ?? 0);
-        $totalEggs = (int) round(((float) $validated['trays_received'] * (int) $validated['eggs_per_tray']) + $looseEggs);
-        $totalCost = ((float) $validated['trays_received'] * (float) $validated['cost_per_tray']) + ($looseEggs * $costPerEgg);
+        // Cost is charged only for purchased eggs
+        $costPerEgg  = $purchasedEggs > 0 ? $totalAmount / $purchasedEggs : 0;
+        $costPerTray = $costPerEgg * $eggsPerTray;
 
-        $intake = DB::transaction(function () use ($validated, $totalEggs, $totalCost, $costPerEgg, $looseEggs) {
+        $intake = DB::transaction(function () use (
+            $validated, $traysReceived, $looseEggs, $freeTrays, $freeLooseEggs,
+            $freeEggs, $purchasedEggs, $totalEggs, $totalAmount, $costPerEgg, $costPerTray, $eggsPerTray
+        ) {
             $intake = EggStockIntake::create([
-                ...$validated,
+                'intake_date'         => $validated['intake_date'],
+                'trays_received'      => $traysReceived,
                 'loose_eggs_received' => $looseEggs,
-                'total_eggs' => $totalEggs,
-                'total_cost' => round($totalCost, 2),
-                'cost_per_egg' => round($costPerEgg, 4),
+                'free_trays'          => $freeTrays,
+                'free_loose_eggs'     => $freeLooseEggs,
+                'free_eggs'           => $freeEggs,
+                'purchased_eggs'      => $purchasedEggs,
+                'eggs_per_tray'       => $eggsPerTray,
+                'total_eggs'          => $totalEggs,
+                'cost_per_tray'       => round($costPerTray, 2),
+                'total_cost'          => round($totalAmount, 2),
+                'cost_per_egg'        => round($costPerEgg, 4),
+                'supplier_name'       => $validated['supplier_name'] ?? null,
+                'notes'               => $validated['notes'] ?? null,
             ]);
 
             $this->calculator->recalculateEntriesFrom($intake->intake_date->toDateString());
@@ -86,7 +110,7 @@ class EggIntakeController extends Controller
 
         return response()->json([
             'message' => 'Egg stock intake recorded successfully.',
-            'data' => new EggStockIntakeResource($intake),
+            'data'    => new EggStockIntakeResource($intake),
         ], 201);
     }
 
@@ -116,8 +140,8 @@ class EggIntakeController extends Controller
             return false;
         }
 
-        $recordDate = Carbon::parse($date)->startOfDay();
-        $today = now()->startOfDay();
+        $recordDate       = Carbon::parse($date)->startOfDay();
+        $today            = now()->startOfDay();
         $firstAllowedDate = $today->copy()->subDays($days - 1);
 
         return $recordDate->greaterThanOrEqualTo($firstAllowedDate)

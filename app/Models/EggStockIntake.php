@@ -13,6 +13,10 @@ class EggStockIntake extends Model
         'intake_date',
         'trays_received',
         'loose_eggs_received',
+        'free_trays',
+        'free_loose_eggs',
+        'free_eggs',
+        'purchased_eggs',
         'eggs_per_tray',
         'total_eggs',
         'cost_per_tray',
@@ -23,16 +27,20 @@ class EggStockIntake extends Model
     ];
 
     protected $casts = [
-        'intake_date' => 'date:Y-m-d',
-        'trays_received' => 'float',
+        'intake_date'         => 'date:Y-m-d',
+        'trays_received'      => 'float',
         'loose_eggs_received' => 'integer',
-        'eggs_per_tray' => 'integer',
-        'total_eggs' => 'integer',
-        'cost_per_tray' => 'float',
-        'total_cost' => 'float',
-        'cost_per_egg' => 'float',
-        'created_at' => 'datetime',
-        'updated_at' => 'datetime',
+        'free_trays'          => 'float',
+        'free_loose_eggs'     => 'integer',
+        'free_eggs'           => 'integer',
+        'purchased_eggs'      => 'integer',
+        'eggs_per_tray'       => 'integer',
+        'total_eggs'          => 'integer',
+        'cost_per_tray'       => 'float',
+        'total_cost'          => 'float',
+        'cost_per_egg'        => 'float',
+        'created_at'          => 'datetime',
+        'updated_at'          => 'datetime',
     ];
 
     public function scopeBetweenDates($query, string $from, string $to)

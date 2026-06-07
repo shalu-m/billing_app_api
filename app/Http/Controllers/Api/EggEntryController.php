@@ -55,15 +55,16 @@ class EggEntryController extends Controller
         $opening = $this->calculator->openingStockForDate($validated['date']);
 
         return response()->json([
-            'date' => $opening['date'],
-            'previous_closing' => $opening['previous_closing'],
-            'new_intake' => $opening['new_intake'],
-            'today_intake' => $opening['today_intake'],
-            'opening_stock' => $opening['opening_stock'],
-            'avg_cost_per_egg' => round($opening['avg_cost_per_egg'], 4),
-            'intake_details' => EggStockIntakeResource::collection($opening['intakes'])->resolve($request),
+            'date'                 => $opening['date'],
+            'previous_closing'     => $opening['previous_closing'],
+            'new_intake'           => $opening['new_intake'],
+            'today_intake'         => $opening['today_intake'],
+            'opening_stock'        => $opening['opening_stock'],
+            'free_stock'           => $opening['free_stock'],
+            'avg_cost_per_egg'     => round($opening['avg_cost_per_egg'], 4),
+            'intake_details'       => EggStockIntakeResource::collection($opening['intakes'])->resolve($request),
             'today_intake_details' => EggStockIntakeResource::collection($opening['today_intakes'])->resolve($request),
-            'stock_layers' => $opening['stock_layers'],
+            'stock_layers'         => $opening['stock_layers'],
         ]);
     }
 
@@ -242,17 +243,19 @@ class EggEntryController extends Controller
 
         return response()->json([
             'period' => ['from' => $from, 'to' => $to],
-            'stock' => [
-                'total_trays_bought' => round((float) $intakes->sum('trays_received'), 2),
-                'total_eggs_bought' => (int) $intakes->sum('total_eggs'),
-                'total_eggs_sold' => $totalSold,
-                'total_damaged' => (int) $entries->sum('damaged_eggs'),
-                'closing_stock' => $closingStock,
+            'stock'  => [
+                'total_trays_bought'   => round((float) $intakes->sum('trays_received'), 2),
+                'total_purchased_eggs' => (int) $intakes->sum('purchased_eggs'),
+                'total_free_eggs'      => (int) $intakes->sum('free_eggs'),
+                'total_eggs_bought'    => (int) $intakes->sum('total_eggs'),
+                'total_eggs_sold'      => $totalSold,
+                'total_damaged'        => (int) $entries->sum('damaged_eggs'),
+                'closing_stock'        => $closingStock,
             ],
-            'money' => [
-                'total_investment' => round((float) $intakes->sum('total_cost'), 2),
-                'total_revenue' => round((float) $entries->sum('total_revenue'), 2),
-                'gross_profit' => round($grossProfit, 2),
+            'money'  => [
+                'total_investment'   => round((float) $intakes->sum('total_cost'), 2),
+                'total_revenue'      => round((float) $entries->sum('total_revenue'), 2),
+                'gross_profit'       => round($grossProfit, 2),
                 'avg_profit_per_egg' => $totalSold > 0 ? round($grossProfit / $totalSold, 2) : 0,
             ],
             'daily_breakdown' => $dailyBreakdown,

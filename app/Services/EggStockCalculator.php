@@ -10,16 +10,18 @@ class EggStockCalculator
 {
     /**
      * Calculate opening stock and stock layers for a given date.
-     * Opening stock = Previous closing stock + All new intakes (FIFO layers)
-     * Stock layers are returned for FIFO-based profit calculation
      *
-     * @param string $date The date to calculate opening stock for (Y-m-d format)
-     * @param int|null $ignoreEntryId Entry to ignore (for updates)
-     * @return array Opening stock details with stock layers
+     * Each layer now carries TWO quantity buckets:
+     *   - purchased_qty : eggs the owner paid for (has a real cost_per_egg)
+     *   - free_qty      : bonus / free eggs (cost_per_egg = 0)
+     *
+     * Consumption order: purchased_qty first, then free_qty — inside each FIFO layer.
+     *
+     * @param string   $date          Y-m-d
+     * @param int|null $ignoreEntryId Entry to skip (used during updates)
      */
     public function openingStockForDate(string $date, ?int $ignoreEntryId = null): array
     {
-        // Get the most recent entry before or on this date
         $previousQuery = EggDailyEntry::whereDate('entry_date', '<', $date)
             ->orderByDesc('entry_date');
 
@@ -27,52 +29,54 @@ class EggStockCalculator
             $previousQuery->whereKeyNot($ignoreEntryId);
         }
 
-        $previousEntry = $previousQuery->first();
+        $previousEntry   = $previousQuery->first();
         $previousClosing = $previousEntry ? (int) $previousEntry->closing_stock : 0;
 
-        // Get remaining stock layers (FIFO) after all previous sales
-        $layers = $this->remainingLayersForDate($date, $ignoreEntryId);
-        $openingStock = (int) collect($layers)->sum('quantity');
+        // FIFO layers remaining after all prior entries
+        $layers      = $this->remainingLayersForDate($date, $ignoreEntryId);
+        $openingStock = (int) collect($layers)->sum(fn ($l) => $l['purchased_qty'] + $l['free_qty']);
 
-        // Get intakes between last entry and today
+        // Intakes since last entry (for display only)
         $intakeSinceLastEntryQuery = EggStockIntake::whereDate('intake_date', '<=', $date);
-
         if ($previousEntry) {
             $intakeSinceLastEntryQuery->whereDate('intake_date', '>', $previousEntry->entry_date->toDateString());
         }
-
         $intakesSinceLastEntry = $intakeSinceLastEntryQuery->orderBy('intake_date')->orderBy('id')->get();
 
-        // Get intakes for today specifically
-        $todayIntakes = EggStockIntake::whereDate('intake_date', $date)
-            ->orderBy('id')
-            ->get();
+        $todayIntakes    = EggStockIntake::whereDate('intake_date', $date)->orderBy('id')->get();
+        $todayIntakeQty  = (int) $todayIntakes->sum('total_eggs');
 
-        $intakeSinceLastEntryQty = (int) $intakesSinceLastEntry->sum('total_eggs');
-        $todayIntakeQty = (int) $todayIntakes->sum('total_eggs');
+        // Total free eggs currently sitting in the remaining layers
+        $totalFreeInLayers = (int) collect($layers)->sum('free_qty');
 
         return [
-            'date' => $date,
-            'previous_closing' => $previousClosing,
-            'new_intake' => max(0, $openingStock - $previousClosing), // Intakes since last entry
-            'today_intake' => $todayIntakeQty,
-            'opening_stock' => $openingStock, // Previous closing + all new intakes
-            'avg_cost_per_egg' => $this->weightedAverageCost($layers),
-            'intakes' => $intakesSinceLastEntry,
-            'today_intakes' => $todayIntakes,
-            'stock_layers' => $layers, // FIFO layers for profit calculation
+            'date'                  => $date,
+            'previous_closing'      => $previousClosing,
+            'new_intake'            => max(0, $openingStock - $previousClosing),
+            'today_intake'          => $todayIntakeQty,
+            'opening_stock'         => $openingStock,
+            'free_stock'            => $totalFreeInLayers,
+            'avg_cost_per_egg'      => $this->weightedAverageCost($layers),
+            'intakes'               => $intakesSinceLastEntry,
+            'today_intakes'         => $todayIntakes,
+            'stock_layers'          => $layers,
         ];
     }
 
     /**
-     * Calculate all values for an egg entry (stock, cost, profit)
-     * Uses FIFO method for cost calculation
+     * Calculate all values for an egg entry (stock, cost, profit).
      *
-     * @param string $date Entry date (Y-m-d format)
-     * @param iterable $saleLines Sale line items with quantity and price
-     * @param int $damagedEggs Number of damaged eggs
-     * @param int|null $ignoreEntryId Entry to ignore (for updates)
-     * @return array Entry values including cost using FIFO
+     * Damage absorption rule:
+     *   1. Use free eggs first (no cost).
+     *   2. Only leftover damaged eggs count against purchased stock (reduce profit).
+     *
+     * Sale cost rule:
+     *   Eggs sold consume purchased_qty first (cost charged), then free_qty (no cost).
+     *
+     * @param string   $date
+     * @param iterable $saleLines
+     * @param int      $damagedEggs
+     * @param int|null $ignoreEntryId
      */
     public function calculateEntryValues(
         string $date,
@@ -80,41 +84,60 @@ class EggStockCalculator
         int $damagedEggs,
         ?int $ignoreEntryId = null
     ): array {
-        $opening = $this->openingStockForDate($date, $ignoreEntryId);
-        $sales = $this->saleTotals($saleLines);
-        $closingStock = $opening['opening_stock'] - $sales['total_eggs_sold'] - $damagedEggs;
+        $opening     = $this->openingStockForDate($date, $ignoreEntryId);
+        $sales       = $this->saleTotals($saleLines);
+        $openingStock = $opening['opening_stock'];
+        $closingStock = $openingStock - $sales['total_eggs_sold'] - $damagedEggs;
 
-        // Use FIFO to get actual cost (includes both sold and damaged eggs)
-        $costLayers = $opening['stock_layers'];
-        $totalConsumed = $sales['total_eggs_sold'] + $damagedEggs;
-        $totalCost = $this->calculateFifoCost($costLayers, $totalConsumed);
+        // Work on a copy of the layers
+        $layers = $opening['stock_layers'];
 
-        // Calculate effective cost per egg (for reporting - only based on sold eggs)
-        $effectiveCostPerEgg = $sales['total_eggs_sold'] > 0
-            ? $totalCost / ($sales['total_eggs_sold'] + $damagedEggs)
+        // --- Step 1: absorb damaged eggs (free first, then purchased) ---
+        $freeAvailable        = (int) collect($layers)->sum('free_qty');
+        $damagedFromFree      = min($damagedEggs, $freeAvailable);
+        $damagedFromPurchased = max(0, $damagedEggs - $damagedFromFree);
+
+        // Consume free eggs for damage (no cost)
+        if ($damagedFromFree > 0) {
+            $this->consumeFreeFromLayers($layers, $damagedFromFree);
+        }
+
+        // Consume purchased eggs for remaining damage (with cost)
+        $damageCost = 0;
+        if ($damagedFromPurchased > 0) {
+            $damageCost = $this->consumePurchasedFromLayers($layers, $damagedFromPurchased);
+        }
+
+        // --- Step 2: cost for sold eggs (purchased first, then free) ---
+        $saleCost = $this->consumePurchasedFromLayers($layers, $sales['total_eggs_sold']);
+        // free eggs sold (if purchased were exhausted) cost nothing — already reflected
+
+        $totalCost = $saleCost + $damageCost;
+
+        // Average effective cost (for reporting)
+        $totalConsumedForCost = $sales['total_eggs_sold'] + $damagedFromPurchased;
+        $effectiveCostPerEgg  = $totalConsumedForCost > 0
+            ? $totalCost / $totalConsumedForCost
             : $opening['avg_cost_per_egg'];
 
         $grossProfit = $sales['total_revenue'] - $totalCost;
 
         return [
-            'opening_stock' => $opening['opening_stock'],
-            'new_stock_today' => $opening['today_intake'],
-            'total_eggs_sold' => $sales['total_eggs_sold'],
-            'damaged_eggs' => $damagedEggs,
-            'closing_stock_raw' => $closingStock,
-            'closing_stock' => max(0, $closingStock),
-            'avg_cost_per_egg' => round($effectiveCostPerEgg, 4),
-            'total_cost' => round($totalCost, 2),
-            'total_revenue' => round($sales['total_revenue'], 2),
-            'gross_profit' => round($grossProfit, 2),
+            'opening_stock'       => $openingStock,
+            'new_stock_today'     => $opening['today_intake'],
+            'total_eggs_sold'     => $sales['total_eggs_sold'],
+            'damaged_eggs'        => $damagedEggs,
+            'closing_stock_raw'   => $closingStock,
+            'closing_stock'       => max(0, $closingStock),
+            'avg_cost_per_egg'    => round($effectiveCostPerEgg, 4),
+            'total_cost'          => round($totalCost, 2),
+            'total_revenue'       => round($sales['total_revenue'], 2),
+            'gross_profit'        => round($grossProfit, 2),
         ];
     }
 
     /**
-     * Recalculate all entries from a given date onwards
-     * Used after intakes or entries are created/updated/deleted
-     *
-     * @param string $date Start recalculation from this date (Y-m-d format)
+     * Recalculate all entries from a given date onwards.
      */
     public function recalculateEntriesFrom(string $date): void
     {
@@ -137,38 +160,36 @@ class EggStockCalculator
         }
     }
 
+    // -------------------------------------------------------------------------
+    // Private helpers
+    // -------------------------------------------------------------------------
+
     /**
-     * Calculate total sales from line items
-     *
-     * @param iterable $saleLines Sale line items
-     * @return array ['total_eggs_sold' => int, 'total_revenue' => float]
+     * Calculate total sales from line items.
      */
     private function saleTotals(iterable $saleLines): array
     {
         $lines = $saleLines instanceof Collection ? $saleLines : collect($saleLines);
 
-        $totalSold = (int) $lines->sum(fn ($line) => $this->lineQuantity($line));
+        $totalSold    = (int) $lines->sum(fn ($line) => $this->lineQuantity($line));
         $totalRevenue = (float) $lines->sum(
             fn ($line) => (float) data_get($line, 'price_per_egg', 0) * $this->lineQuantity($line)
         );
 
         return [
             'total_eggs_sold' => $totalSold,
-            'total_revenue' => $totalRevenue,
+            'total_revenue'   => $totalRevenue,
         ];
     }
 
     /**
-     * Calculate quantity from a sale line (can be in trays or loose eggs)
-     *
-     * @param mixed $line Sale line item
-     * @return int Total eggs
+     * Quantity from a sale line (trays + loose or direct quantity).
      */
     private function lineQuantity(mixed $line): int
     {
-        $trays = (float) data_get($line, 'trays_sold', 0);
-        $looseEggs = (int) data_get($line, 'loose_eggs_sold', 0);
-        $eggsPerTray = (int) data_get($line, 'eggs_per_tray', 30);
+        $trays      = (float) data_get($line, 'trays_sold', 0);
+        $looseEggs  = (int)   data_get($line, 'loose_eggs_sold', 0);
+        $eggsPerTray = (int)  data_get($line, 'eggs_per_tray', 30);
 
         if ($trays > 0 || $looseEggs > 0) {
             return (int) round(($trays * $eggsPerTray) + $looseEggs);
@@ -178,29 +199,32 @@ class EggStockCalculator
     }
 
     /**
-     * Get remaining stock layers after consumption up to a date
-     * Implements FIFO: older intakes are consumed first
+     * Build remaining FIFO layers after all prior consumption up to $date.
      *
-     * @param string $date Calculate layers up to this date (Y-m-d format)
-     * @param int|null $ignoreEntryId Entry to ignore (for updates)
-     * @return array Stock layers [['intake_id', 'intake_date', 'quantity', 'cost_per_egg'], ...]
+     * Each layer:
+     * [
+     *   'intake_id'    => int,
+     *   'intake_date'  => string,
+     *   'purchased_qty'=> int,   // eggs with real cost
+     *   'free_qty'     => int,   // bonus eggs (zero cost)
+     *   'cost_per_egg' => float, // applies only to purchased_qty
+     * ]
      */
     private function remainingLayersForDate(string $date, ?int $ignoreEntryId = null): array
     {
-        // Initialize layers with all intakes up to this date
         $layers = EggStockIntake::whereDate('intake_date', '<=', $date)
             ->orderBy('intake_date')
             ->orderBy('id')
             ->get()
             ->map(fn (EggStockIntake $intake) => [
-                'intake_id' => $intake->id,
-                'intake_date' => $intake->intake_date->toDateString(),
-                'quantity' => (int) $intake->total_eggs,
-                'cost_per_egg' => (float) $intake->cost_per_egg,
+                'intake_id'     => $intake->id,
+                'intake_date'   => $intake->intake_date->toDateString(),
+                'purchased_qty' => (int) $intake->purchased_eggs,
+                'free_qty'      => (int) $intake->free_eggs,
+                'cost_per_egg'  => (float) $intake->cost_per_egg,
             ])
             ->all();
 
-        // Get all entries before this date (in order)
         $entriesQuery = EggDailyEntry::whereDate('entry_date', '<', $date)
             ->orderBy('entry_date')
             ->orderBy('id');
@@ -209,64 +233,116 @@ class EggStockCalculator
             $entriesQuery->whereKeyNot($ignoreEntryId);
         }
 
-        // Consume layers based on each entry (FIFO)
         $entries = $entriesQuery->get();
+
         foreach ($entries as $entry) {
-            $quantityToConsume = (int) $entry->total_eggs_sold + (int) $entry->damaged_eggs;
-            $this->calculateFifoCost($layers, $quantityToConsume);
+            $damaged     = (int) $entry->damaged_eggs;
+            $totalSold   = (int) $entry->total_eggs_sold;
+
+            // Replicate the same absorption order used in calculateEntryValues()
+            $freeAvailable        = (int) collect($layers)->sum('free_qty');
+            $damagedFromFree      = min($damaged, $freeAvailable);
+            $damagedFromPurchased = max(0, $damaged - $damagedFromFree);
+
+            if ($damagedFromFree > 0) {
+                $this->consumeFreeFromLayers($layers, $damagedFromFree);
+            }
+
+            if ($damagedFromPurchased > 0) {
+                $this->consumePurchasedFromLayers($layers, $damagedFromPurchased);
+            }
+
+            // Consume sold eggs (purchased first, then free)
+            $this->consumePurchasedFromLayers($layers, $totalSold);
         }
+
+        // Remove fully exhausted layers
+        $layers = array_values(array_filter(
+            $layers,
+            fn ($l) => $l['purchased_qty'] > 0 || $l['free_qty'] > 0
+        ));
 
         return $layers;
     }
 
     /**
-     * Calculate cost using FIFO method and consume from layers array
-     * Modifies the $layers array by consuming quantities
-     *
-     * @param array $layers Mutable reference to layers array
-     * @param int $quantity Number of eggs to consume
-     * @return float Total cost for the consumed quantity
+     * Consume only FREE eggs from layers (FIFO order).
+     * No cost is charged. Modifies $layers in place.
      */
-    private function calculateFifoCost(array &$layers, int $quantity): float
+    private function consumeFreeFromLayers(array &$layers, int $quantity): void
     {
-        $cost = 0;
-        $remainingToConsume = $quantity;
+        $remaining = $quantity;
 
         foreach ($layers as &$layer) {
-            if ($remainingToConsume <= 0) {
+            if ($remaining <= 0) {
                 break;
             }
 
-            if ($layer['quantity'] <= 0) {
+            if ($layer['free_qty'] <= 0) {
                 continue;
             }
 
-            // Take as much as possible from this layer
-            $taken = min($layer['quantity'], $remainingToConsume);
-            $cost += $taken * $layer['cost_per_egg'];
-            $layer['quantity'] -= $taken;
-            $remainingToConsume -= $taken;
+            $taken              = min($layer['free_qty'], $remaining);
+            $layer['free_qty'] -= $taken;
+            $remaining         -= $taken;
+        }
+
+        unset($layer);
+    }
+
+    /**
+     * Consume PURCHASED eggs from layers (FIFO order) and return the total cost.
+     * If purchased eggs in a layer are exhausted, spills into free eggs of the
+     * same layer (those sell as pure profit — no additional cost).
+     * Modifies $layers in place.
+     */
+    private function consumePurchasedFromLayers(array &$layers, int $quantity): float
+    {
+        $cost      = 0.0;
+        $remaining = $quantity;
+
+        foreach ($layers as &$layer) {
+            if ($remaining <= 0) {
+                break;
+            }
+
+            // First take from purchased (costs money)
+            if ($layer['purchased_qty'] > 0) {
+                $taken                  = min($layer['purchased_qty'], $remaining);
+                $cost                  += $taken * $layer['cost_per_egg'];
+                $layer['purchased_qty'] -= $taken;
+                $remaining             -= $taken;
+            }
+
+            // If still more needed, spill into free eggs of this layer (no cost)
+            if ($remaining > 0 && $layer['free_qty'] > 0) {
+                $taken             = min($layer['free_qty'], $remaining);
+                $layer['free_qty'] -= $taken;
+                $remaining         -= $taken;
+            }
         }
 
         unset($layer);
 
-        // Remove empty layers
-        $layers = array_values(array_filter($layers, fn ($layer) => $layer['quantity'] > 0));
+        // Remove exhausted layers
+        $layers = array_values(array_filter(
+            $layers,
+            fn ($l) => $l['purchased_qty'] > 0 || $l['free_qty'] > 0
+        ));
 
         return $cost;
     }
 
     /**
-     * Calculate weighted average cost per egg from layers
-     *
-     * @param array $layers Stock layers
-     * @return float Average cost per egg
+     * Weighted average cost per egg (based only on purchased eggs in layers).
      */
     private function weightedAverageCost(array $layers): float
     {
-        $eggs = (int) collect($layers)->sum('quantity');
-        $cost = (float) collect($layers)->sum(fn ($layer) => $layer['quantity'] * $layer['cost_per_egg']);
+        $purchasedEggs = (int)   collect($layers)->sum('purchased_qty');
+        $purchasedCost = (float) collect($layers)->sum(
+            fn ($l) => $l['purchased_qty'] * $l['cost_per_egg']
+        );
 
-        return $eggs > 0 ? $cost / $eggs : 0;
+        return $purchasedEggs > 0 ? $purchasedCost / $purchasedEggs : 0;
     }
 }

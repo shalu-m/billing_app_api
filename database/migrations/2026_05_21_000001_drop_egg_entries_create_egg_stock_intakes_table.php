@@ -13,6 +13,10 @@ return new class extends Migration
             $table->date('intake_date');
             $table->decimal('trays_received', 10, 2);
             $table->unsignedInteger('loose_eggs_received')->default(0);
+            $table->decimal('free_trays', 10, 2)->default(0);
+            $table->unsignedInteger('free_loose_eggs')->default(0);
+            $table->unsignedInteger('free_eggs')->default(0);
+            $table->unsignedInteger('purchased_eggs')->default(0);
             $table->unsignedInteger('eggs_per_tray')->default(30);
             $table->unsignedInteger('total_eggs');
             $table->decimal('cost_per_tray', 10, 2);
