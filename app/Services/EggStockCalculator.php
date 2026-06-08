@@ -24,42 +24,42 @@ class EggStockCalculator
     {
         $previousQuery = EggDailyEntry::whereDate('entry_date', '<', $date)
             ->orderByDesc('entry_date');
-
+ 
         if ($ignoreEntryId) {
             $previousQuery->whereKeyNot($ignoreEntryId);
         }
-
+ 
         $previousEntry   = $previousQuery->first();
         $previousClosing = $previousEntry ? (int) $previousEntry->closing_stock : 0;
-
+ 
         // FIFO layers remaining after all prior entries
         $layers      = $this->remainingLayersForDate($date, $ignoreEntryId);
         $openingStock = (int) collect($layers)->sum(fn ($l) => $l['purchased_qty'] + $l['free_qty']);
-
+ 
         // Intakes since last entry (for display only)
         $intakeSinceLastEntryQuery = EggStockIntake::whereDate('intake_date', '<=', $date);
         if ($previousEntry) {
             $intakeSinceLastEntryQuery->whereDate('intake_date', '>', $previousEntry->entry_date->toDateString());
         }
         $intakesSinceLastEntry = $intakeSinceLastEntryQuery->orderBy('intake_date')->orderBy('id')->get();
-
-        $todayIntakes    = EggStockIntake::whereDate('intake_date', $date)->orderBy('id')->get();
-        $todayIntakeQty  = (int) $todayIntakes->sum('total_eggs');
-
+ 
+        $todayIntakes   = EggStockIntake::whereDate('intake_date', $date)->orderBy('id')->get();
+        $todayIntakeQty = (int) $todayIntakes->sum('total_eggs');
+ 
         // Total free eggs currently sitting in the remaining layers
         $totalFreeInLayers = (int) collect($layers)->sum('free_qty');
-
+ 
         return [
-            'date'                  => $date,
-            'previous_closing'      => $previousClosing,
-            'new_intake'            => max(0, $openingStock - $previousClosing),
-            'today_intake'          => $todayIntakeQty,
-            'opening_stock'         => $openingStock,
-            'free_stock'            => $totalFreeInLayers,
-            'avg_cost_per_egg'      => $this->weightedAverageCost($layers),
-            'intakes'               => $intakesSinceLastEntry,
-            'today_intakes'         => $todayIntakes,
-            'stock_layers'          => $layers,
+            'date'             => $date,
+            'previous_closing' => $previousClosing,
+            'new_intake'       => max(0, $openingStock - $previousClosing),
+            'today_intake'     => $todayIntakeQty,
+            'opening_stock'    => $openingStock,
+            'free_stock'       => $totalFreeInLayers,
+            'avg_cost_per_egg' => $this->weightedAverageCost($layers),
+            'intakes'          => $intakesSinceLastEntry,
+            'today_intakes'    => $todayIntakes,
+            'stock_layers'     => $layers,
         ];
     }
 
@@ -84,55 +84,64 @@ class EggStockCalculator
         int $damagedEggs,
         ?int $ignoreEntryId = null
     ): array {
-        $opening     = $this->openingStockForDate($date, $ignoreEntryId);
-        $sales       = $this->saleTotals($saleLines);
+        $opening      = $this->openingStockForDate($date, $ignoreEntryId);
+        $sales        = $this->saleTotals($saleLines);
         $openingStock = $opening['opening_stock'];
         $closingStock = $openingStock - $sales['total_eggs_sold'] - $damagedEggs;
-
-        // Work on a copy of the layers
+ 
+        // Work on a mutable copy of the opening layers.
+        // After all consumption below, $layers will hold the CLOSING state —
+        // exactly what the next day needs as its cache starting point.
         $layers = $opening['stock_layers'];
-
+ 
         // --- Step 1: absorb damaged eggs (free first, then purchased) ---
         $freeAvailable        = (int) collect($layers)->sum('free_qty');
         $damagedFromFree      = min($damagedEggs, $freeAvailable);
         $damagedFromPurchased = max(0, $damagedEggs - $damagedFromFree);
-
-        // Consume free eggs for damage (no cost)
+ 
         if ($damagedFromFree > 0) {
-            $this->consumeFreeFromLayers($layers, $damagedFromFree);
+            $this->consumeFreeFromLayers($layers, $damagedFromFree, $date);
         }
-
-        // Consume purchased eggs for remaining damage (with cost)
+ 
         $damageCost = 0;
         if ($damagedFromPurchased > 0) {
-            $damageCost = $this->consumePurchasedFromLayers($layers, $damagedFromPurchased);
+            $damageCost = $this->consumePurchasedFromLayers($layers, $damagedFromPurchased, $date);
         }
-
+ 
         // --- Step 2: cost for sold eggs (purchased first, then free) ---
-        $saleCost = $this->consumePurchasedFromLayers($layers, $sales['total_eggs_sold']);
-        // free eggs sold (if purchased were exhausted) cost nothing — already reflected
-
+        $saleCost = $this->consumePurchasedFromLayers($layers, $sales['total_eggs_sold'], $date);
+ 
         $totalCost = $saleCost + $damageCost;
-
+ 
         // Average effective cost (for reporting)
         $totalConsumedForCost = $sales['total_eggs_sold'] + $damagedFromPurchased;
         $effectiveCostPerEgg  = $totalConsumedForCost > 0
             ? $totalCost / $totalConsumedForCost
             : $opening['avg_cost_per_egg'];
-
+ 
         $grossProfit = $sales['total_revenue'] - $totalCost;
-
+ 
+        // $layers now reflects the state AFTER this entry's full consumption.
+        // Strip exhausted layers before storing.
+        $closingLayers = array_values(array_filter(
+            $layers,
+            fn ($l) => $l['purchased_qty'] > 0 || $l['free_qty'] > 0
+        ));
+ 
         return [
-            'opening_stock'       => $openingStock,
-            'new_stock_today'     => $opening['today_intake'],
-            'total_eggs_sold'     => $sales['total_eggs_sold'],
-            'damaged_eggs'        => $damagedEggs,
-            'closing_stock_raw'   => $closingStock,
-            'closing_stock'       => max(0, $closingStock),
-            'avg_cost_per_egg'    => round($effectiveCostPerEgg, 4),
-            'total_cost'          => round($totalCost, 2),
-            'total_revenue'       => round($sales['total_revenue'], 2),
-            'gross_profit'        => round($grossProfit, 2),
+            'opening_stock'     => $openingStock,
+            'new_stock_today'   => $opening['today_intake'],
+            'total_eggs_sold'   => $sales['total_eggs_sold'],
+            'damaged_eggs'      => $damagedEggs,
+            'closing_stock_raw' => $closingStock,
+            'closing_stock'     => max(0, $closingStock),
+            'avg_cost_per_egg'  => round($effectiveCostPerEgg, 4),
+            'total_cost'        => round($totalCost, 2),
+            'total_revenue'     => round($sales['total_revenue'], 2),
+            'gross_profit'      => round($grossProfit, 2),
+            // ← CLOSING layers: saved on the entry row and used as the cache
+            //   starting point for the next day's remainingLayersForDate().
+            'stock_layers'      => $closingLayers,
         ];
     }
 
@@ -145,7 +154,7 @@ class EggStockCalculator
             ->whereDate('entry_date', '>=', $date)
             ->orderBy('entry_date')
             ->get();
-
+ 
         foreach ($entries as $entry) {
             $values = $this->calculateEntryValues(
                 $entry->entry_date->toDateString(),
@@ -153,9 +162,13 @@ class EggStockCalculator
                 (int) $entry->damaged_eggs,
                 $entry->id
             );
-
+ 
+            // closing_stock_raw is only used for the oversell guard in the
+            // controller; don't persist it.
             unset($values['closing_stock_raw']);
-
+ 
+            // stock_layers is now already included in $values (closing layers),
+            // so no second call to remainingLayersForDate() is needed here.
             $entry->forceFill($values)->save();
         }
     }
@@ -201,6 +214,14 @@ class EggStockCalculator
     /**
      * Build remaining FIFO layers after all prior consumption up to $date.
      *
+     * OPTIMIZATION: Instead of processing ALL entries from the beginning,
+     * we find the most recent entry before the target date and use its
+     * cached layers as a starting point. This reduces processing from O(n) 
+     * to O(m) where m = entries between cache and target date.
+     *
+     * IMPORTANT: Each entry only consumes from layers with intake_date <= entry_date.
+     * This prevents future intake dates from being affected by past entries.
+     *
      * Each layer:
      * [
      *   'intake_id'    => int,
@@ -210,72 +231,135 @@ class EggStockCalculator
      *   'cost_per_egg' => float, // applies only to purchased_qty
      * ]
      */
-    private function remainingLayersForDate(string $date, ?int $ignoreEntryId = null): array
+     private function remainingLayersForDate(string $date, ?int $ignoreEntryId = null): array
     {
-        $layers = EggStockIntake::whereDate('intake_date', '<=', $date)
-            ->orderBy('intake_date')
-            ->orderBy('id')
-            ->get()
-            ->map(fn (EggStockIntake $intake) => [
-                'intake_id'     => $intake->id,
-                'intake_date'   => $intake->intake_date->toDateString(),
-                'purchased_qty' => (int) $intake->purchased_eggs,
-                'free_qty'      => (int) $intake->free_eggs,
-                'cost_per_egg'  => (float) $intake->cost_per_egg,
-            ])
-            ->all();
-
-        $entriesQuery = EggDailyEntry::whereDate('entry_date', '<', $date)
-            ->orderBy('entry_date')
-            ->orderBy('id');
-
-        if ($ignoreEntryId) {
-            $entriesQuery->whereKeyNot($ignoreEntryId);
+        // Most recent entry strictly before $date — our cache anchor.
+        $cacheEntry = EggDailyEntry::whereDate('entry_date', '<', $date)
+            ->orderByDesc('entry_date')
+            ->orderByDesc('id')
+            ->first();
+ 
+        $layers = [];
+ 
+        if ($cacheEntry && $cacheEntry->stock_layers) {
+            // ----------------------------------------------------------------
+            // Fast path: start from the CLOSING layers of the last entry.
+            // These already reflect everything up to and including that entry,
+            // so we only need to replay the (usually zero or one) entries that
+            // sit strictly between the cache entry and $date.
+            // ----------------------------------------------------------------
+            $layers = is_array($cacheEntry->stock_layers)
+                ? $cacheEntry->stock_layers
+                : json_decode($cacheEntry->stock_layers, true) ?? [];
+ 
+            $startDate = $cacheEntry->entry_date->toDateString();
+ 
+            // Add intakes that arrived AFTER the cache entry and ON OR BEFORE $date.
+            // (Intakes up to the cache entry's date are already baked into its layers.)
+            $newIntakes = EggStockIntake::whereDate('intake_date', '>', $startDate)
+                ->whereDate('intake_date', '<=', $date)
+                ->orderBy('intake_date')
+                ->orderBy('id')
+                ->get();
+ 
+            foreach ($newIntakes as $intake) {
+                $layers[] = [
+                    'intake_id'     => $intake->id,
+                    'intake_date'   => $intake->intake_date->toDateString(),
+                    'purchased_qty' => (int) $intake->purchased_eggs,
+                    'free_qty'      => (int) $intake->free_eggs,
+                    'cost_per_egg'  => (float) $intake->cost_per_egg,
+                ];
+            }
+ 
+            // Replay only the entries that are strictly between the cache
+            // entry and $date.  The cache entry itself is excluded because its
+            // consumption is already reflected in the stored closing layers.
+            $gapEntriesQuery = EggDailyEntry::whereDate('entry_date', '>', $startDate)
+                ->whereDate('entry_date', '<', $date)
+                ->orderBy('entry_date')
+                ->orderBy('id');
+ 
+            if ($ignoreEntryId) {
+                $gapEntriesQuery->whereKeyNot($ignoreEntryId);
+            }
+ 
+            $gapEntries = $gapEntriesQuery->get();
+        } else {
+            // ----------------------------------------------------------------
+            // Cold path: no usable cache — rebuild from all intakes.
+            // ----------------------------------------------------------------
+            $layers = EggStockIntake::whereDate('intake_date', '<=', $date)
+                ->orderBy('intake_date')
+                ->orderBy('id')
+                ->get()
+                ->map(fn (EggStockIntake $intake) => [
+                    'intake_id'     => $intake->id,
+                    'intake_date'   => $intake->intake_date->toDateString(),
+                    'purchased_qty' => (int) $intake->purchased_eggs,
+                    'free_qty'      => (int) $intake->free_eggs,
+                    'cost_per_egg'  => (float) $intake->cost_per_egg,
+                ])
+                ->all();
+ 
+            // Replay ALL entries before $date.
+            $gapEntriesQuery = EggDailyEntry::whereDate('entry_date', '<', $date)
+                ->orderBy('entry_date')
+                ->orderBy('id');
+ 
+            if ($ignoreEntryId) {
+                $gapEntriesQuery->whereKeyNot($ignoreEntryId);
+            }
+ 
+            $gapEntries = $gapEntriesQuery->get();
         }
-
-        $entries = $entriesQuery->get();
-
-        foreach ($entries as $entry) {
-            $damaged     = (int) $entry->damaged_eggs;
-            $totalSold   = (int) $entry->total_eggs_sold;
-
-            // Replicate the same absorption order used in calculateEntryValues()
-            $freeAvailable        = (int) collect($layers)->sum('free_qty');
+ 
+        // Replay each gap entry in chronological order.
+        foreach ($gapEntries as $entry) {
+            $entryDate = $entry->entry_date->toDateString();
+            $damaged   = (int) $entry->damaged_eggs;
+            $totalSold = (int) $entry->total_eggs_sold;
+ 
+            // Damage: free eggs first, then purchased
+            $layersForEntry       = array_filter($layers, fn ($l) => $l['intake_date'] <= $entryDate);
+            $freeAvailable        = (int) collect($layersForEntry)->sum('free_qty');
             $damagedFromFree      = min($damaged, $freeAvailable);
             $damagedFromPurchased = max(0, $damaged - $damagedFromFree);
-
+ 
             if ($damagedFromFree > 0) {
-                $this->consumeFreeFromLayers($layers, $damagedFromFree);
+                $this->consumeFreeFromLayers($layers, $damagedFromFree, $entryDate);
             }
-
             if ($damagedFromPurchased > 0) {
-                $this->consumePurchasedFromLayers($layers, $damagedFromPurchased);
+                $this->consumePurchasedFromLayers($layers, $damagedFromPurchased, $entryDate);
             }
-
-            // Consume sold eggs (purchased first, then free)
-            $this->consumePurchasedFromLayers($layers, $totalSold);
+ 
+            // Sales: purchased first, then free
+            $this->consumePurchasedFromLayers($layers, $totalSold, $entryDate);
         }
-
-        // Remove fully exhausted layers
-        $layers = array_values(array_filter(
+ 
+        // Strip exhausted layers.
+        return array_values(array_filter(
             $layers,
             fn ($l) => $l['purchased_qty'] > 0 || $l['free_qty'] > 0
         ));
-
-        return $layers;
     }
-
     /**
      * Consume only FREE eggs from layers (FIFO order).
      * No cost is charged. Modifies $layers in place.
+     * Only modifies layers with intake_date <= $entryDate (if provided).
      */
-    private function consumeFreeFromLayers(array &$layers, int $quantity): void
+    private function consumeFreeFromLayers(array &$layers, int $quantity, ?string $entryDate = null): void
     {
         $remaining = $quantity;
 
         foreach ($layers as &$layer) {
             if ($remaining <= 0) {
                 break;
+            }
+
+            // Skip layers that didn't exist before this entry
+            if ($entryDate && $layer['intake_date'] > $entryDate) {
+                continue;
             }
 
             if ($layer['free_qty'] <= 0) {
@@ -295,44 +379,41 @@ class EggStockCalculator
      * If purchased eggs in a layer are exhausted, spills into free eggs of the
      * same layer (those sell as pure profit — no additional cost).
      * Modifies $layers in place.
+     * Only modifies layers with intake_date <= $entryDate (if provided).
      */
-    private function consumePurchasedFromLayers(array &$layers, int $quantity): float
+    private function consumePurchasedFromLayers(array &$layers, int $quantity, ?string $entryDate = null): float
     {
         $cost      = 0.0;
         $remaining = $quantity;
-
+ 
         foreach ($layers as &$layer) {
-            if ($remaining <= 0) {
-                break;
-            }
-
-            // First take from purchased (costs money)
+            if ($remaining <= 0) break;
+            if ($entryDate && $layer['intake_date'] > $entryDate) continue;
+ 
             if ($layer['purchased_qty'] > 0) {
-                $taken                  = min($layer['purchased_qty'], $remaining);
-                $cost                  += $taken * $layer['cost_per_egg'];
+                $taken                   = min($layer['purchased_qty'], $remaining);
+                $cost                   += $taken * $layer['cost_per_egg'];
                 $layer['purchased_qty'] -= $taken;
-                $remaining             -= $taken;
+                $remaining              -= $taken;
             }
-
-            // If still more needed, spill into free eggs of this layer (no cost)
+ 
             if ($remaining > 0 && $layer['free_qty'] > 0) {
                 $taken             = min($layer['free_qty'], $remaining);
                 $layer['free_qty'] -= $taken;
                 $remaining         -= $taken;
             }
         }
-
+ 
         unset($layer);
-
-        // Remove exhausted layers
+ 
         $layers = array_values(array_filter(
             $layers,
             fn ($l) => $l['purchased_qty'] > 0 || $l['free_qty'] > 0
         ));
-
+ 
         return $cost;
     }
-
+ 
     /**
      * Weighted average cost per egg (based only on purchased eggs in layers).
      */
@@ -342,7 +423,7 @@ class EggStockCalculator
         $purchasedCost = (float) collect($layers)->sum(
             fn ($l) => $l['purchased_qty'] * $l['cost_per_egg']
         );
-
+ 
         return $purchasedEggs > 0 ? $purchasedCost / $purchasedEggs : 0;
     }
 }

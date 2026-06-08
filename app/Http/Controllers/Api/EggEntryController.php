@@ -119,14 +119,14 @@ class EggEntryController extends Controller
 
     public function update(UpdateEggEntryRequest $request, EggDailyEntry $eggEntry): JsonResponse
     {
-        if (! $this->isWithinLastDays($eggEntry->entry_date)) {
-            return $this->recentWindowResponse('Egg entries can be edited only for the last 5 days.');
+        if (! $this->isWithinLastDays($eggEntry->entry_date, 15)) {
+            return $this->recentWindowResponse('Egg entries can be edited only for the last 15 days.');
         }
 
         $validated = $request->validated();
 
-        if (! $this->isWithinLastDays($validated['entry_date'])) {
-            return $this->recentWindowResponse('Egg entries can be edited only for dates in the last 5 days.');
+        if (! $this->isWithinLastDays($validated['entry_date'], 15)) {
+            return $this->recentWindowResponse('Egg entries can be edited only for dates in the last 15 days.');
         }
 
         $oldDate = $eggEntry->entry_date->toDateString();
@@ -174,8 +174,8 @@ class EggEntryController extends Controller
 
     public function destroy(EggDailyEntry $eggEntry): JsonResponse
     {
-        if (! $this->isWithinLastDays($eggEntry->entry_date)) {
-            return $this->recentWindowResponse('Egg entries can be deleted only for the last 5 days.');
+        if (! $this->isWithinLastDays($eggEntry->entry_date, 15)) {
+            return $this->recentWindowResponse('Egg entries can be deleted only for the last 15 days.');
         }
 
         $date = $eggEntry->entry_date->toDateString();

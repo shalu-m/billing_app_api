@@ -14,7 +14,7 @@ use Illuminate\Support\Facades\DB;
 
 class EggIntakeController extends Controller
 {
-    public function __construct(private readonly EggStockCalculator $calculator)
+        public function __construct(private readonly EggStockCalculator $calculator)
     {
     }
 
@@ -57,12 +57,12 @@ class EggIntakeController extends Controller
             'notes'                 => 'nullable|string|max:1000',
         ]);
 
-        $traysReceived    = (float) $validated['trays_received'];
-        $looseEggs        = (int) ($validated['loose_eggs_received'] ?? 0);
-        $freeTrays        = (float) ($validated['free_trays'] ?? 0);
-        $freeLooseEggs    = (int) ($validated['free_loose_eggs'] ?? 0);
-        $eggsPerTray      = (int) $validated['eggs_per_tray'];
-        $totalAmount      = (float) $validated['total_purchase_amount'];
+        $traysReceived = (float) $validated['trays_received'];
+        $looseEggs     = (int) ($validated['loose_eggs_received'] ?? 0);
+        $freeTrays     = (float) ($validated['free_trays'] ?? 0);
+        $freeLooseEggs = (int) ($validated['free_loose_eggs'] ?? 0);
+        $eggsPerTray   = (int) $validated['eggs_per_tray'];
+        $totalAmount   = (float) $validated['total_purchase_amount'];
 
         $purchasedEggs = (int) round(($traysReceived * $eggsPerTray) + $looseEggs);
         $freeEggs      = (int) round(($freeTrays * $eggsPerTray) + $freeLooseEggs);
@@ -78,7 +78,6 @@ class EggIntakeController extends Controller
             ], 422);
         }
 
-        // Cost is charged only for purchased eggs
         $costPerEgg  = $purchasedEggs > 0 ? $totalAmount / $purchasedEggs : 0;
         $costPerTray = $costPerEgg * $eggsPerTray;
 
@@ -116,9 +115,9 @@ class EggIntakeController extends Controller
 
     public function destroy(EggStockIntake $eggIntake): JsonResponse
     {
-        if (! $this->isWithinLastDays($eggIntake->intake_date)) {
+        if (! $this->isWithinLastDays($eggIntake->intake_date, 15)) {
             return response()->json([
-                'message' => 'Egg stock intakes can be deleted only for the last 5 days.',
+                'message' => 'Egg stock intakes can be deleted only for the last 15 days.',
             ], 403);
         }
 

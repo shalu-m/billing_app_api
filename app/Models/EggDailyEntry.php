@@ -21,6 +21,7 @@ class EggDailyEntry extends Model
         'total_cost',
         'total_revenue',
         'gross_profit',
+        'stock_layers',
         'notes',
     ];
 
@@ -35,6 +36,7 @@ class EggDailyEntry extends Model
         'total_cost' => 'float',
         'total_revenue' => 'float',
         'gross_profit' => 'float',
+        'stock_layers' => 'array',
         'created_at' => 'datetime',
         'updated_at' => 'datetime',
     ];
