@@ -16,6 +16,7 @@ return new class extends Migration
             $table->unsignedInteger('total_eggs_sold')->default(0);
             $table->unsignedInteger('damaged_eggs')->default(0);
             $table->unsignedInteger('closing_stock')->default(0);
+            $table->json('stock_layers')->nullable();
             $table->decimal('avg_cost_per_egg', 10, 4)->default(0);
             $table->decimal('total_cost', 10, 2)->default(0);
             $table->decimal('total_revenue', 10, 2)->default(0);
